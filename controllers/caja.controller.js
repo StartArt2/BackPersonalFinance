@@ -1,22 +1,22 @@
+// controllers/caja.controller.js
 const Caja = require("../models/caja.model");
 const GastoFijo = require("../models/gastoFijo.model");
 const GastoVariable = require("../models/gastoVariable.model");
 const Compra = require("../models/compra.model");
 const Deuda = require("../models/deuda.model");
+const { toLocalStartOfDay, toLocalEndOfDay } = require("../utils/dateUtils");
 
-// Obtener todas las cajas con referencias
-exports.getCajas = async (req, res) => {
+async function getCajas(req, res) {
   try {
     const cajas = await Caja.find()
       .populate("gastos_fijos gastos_variables compras deudas");
-    res.json(cajas);
+    return res.json(cajas);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
-};
+}
 
-// Crear o actualizar caja del día con cálculo automático
-exports.createOrUpdateCaja = async (req, res) => {
+async function createOrUpdateCaja(req, res) {
   try {
     const { fecha, ingresos_dia } = req.body;
 
@@ -24,31 +24,30 @@ exports.createOrUpdateCaja = async (req, res) => {
       return res.status(400).json({ error: "Fecha e ingresos_dia son requeridos" });
     }
 
-    // Normalizar la fecha (ignorar horas)
-    const start = new Date(fecha);
+    // normalizar la fecha (parseando como local, usando T00:00:00)
+    const start = toLocalStartOfDay(fecha);
+
     start.setHours(0, 0, 0, 0);
-    const end = new Date(fecha);
+    const end = toLocalEndOfDay(fecha);
+
     end.setHours(23, 59, 59, 999);
 
-    // Buscar todos los gastos de ese día en paralelo
+    // buscar gastos del día
     const [gastosFijos, gastosVariables, compras, deudas] = await Promise.all([
       GastoFijo.find({ fecha: { $gte: start, $lte: end } }),
       GastoVariable.find({ fecha: { $gte: start, $lte: end } }),
       Compra.find({ fecha: { $gte: start, $lte: end } }),
-      Deuda.find({ fecha: { $gte: start, $lte: end } })
+      Deuda.find({ fecha: { $gte: start, $lte: end } }) // si Deuda guarda fecha, si no se puede omitir
     ]);
 
-    // Calcular el total de gastos
     const total_gastos_dia =
       [...gastosFijos, ...gastosVariables, ...compras, ...deudas].reduce(
         (sum, g) => sum + (g.valor || 0),
         0
       );
 
-    // Calcular saldo
     const saldo_dia = ingresos_dia - total_gastos_dia;
 
-    // Crear o actualizar caja
     const caja = await Caja.findOneAndUpdate(
       { fecha: start },
       {
@@ -61,11 +60,16 @@ exports.createOrUpdateCaja = async (req, res) => {
         compras: compras.map(g => g._id),
         deudas: deudas.map(g => g._id)
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true }
     ).populate("gastos_fijos gastos_variables compras deudas");
 
-    res.json(caja);
+    return res.json(caja);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
+}
+
+module.exports = {
+  getCajas,
+  createOrUpdateCaja
 };

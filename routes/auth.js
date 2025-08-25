@@ -58,4 +58,17 @@ router.post('/login', async (req, res) => {
     }
 });
 
+// Perfil del usuario autenticado
+router.get('/profile', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password'); // excluye el hash
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    return res.json({ user });
+  } catch (err) {
+    console.error("❌ Error en /profile:", err);
+    return res.status(500).json({ message: 'Error interno' });
+  }
+});
+
 module.exports = router;
