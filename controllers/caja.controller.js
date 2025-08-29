@@ -69,7 +69,33 @@ async function createOrUpdateCaja(req, res) {
   }
 }
 
+// Obtener detalle de una caja en una fecha específica
+async function getCajaByDate(req, res) {
+  try {
+    const { fecha } = req.params;
+    if (!fecha) {
+      return res.status(400).json({ error: "Se requiere la fecha en formato YYYY-MM-DD" });
+    }
+
+    const start = toLocalStartOfDay(fecha);
+    start.setHours(0, 0, 0, 0);
+    const end = toLocalEndOfDay(fecha);
+    end.setHours(23, 59, 59, 999);
+
+    const caja = await Caja.findOne({ fecha: start }).populate("gastos_fijos gastos_variables compras deudas");
+
+    if (!caja) {
+      return res.status(404).json({ message: "No existe caja registrada en esa fecha" });
+    }
+
+    return res.json(caja);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   getCajas,
-  createOrUpdateCaja
+  createOrUpdateCaja,
+  getCajaByDate
 };
