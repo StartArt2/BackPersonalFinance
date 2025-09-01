@@ -12,7 +12,9 @@ exports.createCompra = async (req, res) => {
     }
 
     // Normalizar fecha al inicio del día local
+    console.log("Fecha recibida:", fecha);
     const fechaLocal = parseLocalStartOfDayFromYYYYMMDD(fecha);
+    console.log("Fecha parseada:", fechaLocal);
     if (!fechaLocal) {
       return res.status(400).json({ error: "Formato de fecha inválido (YYYY-MM-DD)" });
     }

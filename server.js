@@ -45,7 +45,7 @@ app.use("/api/compras", compraRoutes);
 app.use("/api/deudas", deudaRoutes);
 app.use("/api/gastos-fijos", gastoFijoRoutes);
 app.use("/api/gastos-variables", gastoVariableRoutes);
-app.use("/api/cajas", cajaRoutes);
+app.use("/api/caja", cajaRoutes);
 
 // Iniciar servidor
 app.listen(PORT, () => {

@@ -80,7 +80,7 @@ exports.getGastoFijoById = async (req, res) => {
 };
 
 //
-// Actualizar (recalcula cajas antiguas y nuevas si cambia fecha)
+// Actualizar (recalcula caja antiguas y nuevas si cambia fecha)
 //
 exports.updateGastoFijo = async (req, res) => {
   try {

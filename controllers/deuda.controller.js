@@ -13,7 +13,14 @@ exports.getDeudas = async (req, res) => {
 // Crear una deuda
 exports.createDeuda = async (req, res) => {
   try {
-    const item = new Deuda(req.body);
+    const data = req.body;
+
+    // capital inicial = monto_total al inicio
+    if (!data.capital_inicial) {
+      data.capital_inicial = data.monto_total;
+    }
+
+    const item = new Deuda(data);
     await item.save();
     res.status(201).json(item);
   } catch (err) {

@@ -1,101 +1,106 @@
-// controllers/caja.controller.js
 const Caja = require("../models/caja.model");
-const GastoFijo = require("../models/gastoFijo.model");
-const GastoVariable = require("../models/gastoVariable.model");
-const Compra = require("../models/compra.model");
-const Deuda = require("../models/deuda.model");
-const { toLocalStartOfDay, toLocalEndOfDay } = require("../utils/dateUtils");
+const { recalculateCajaTotals } = require("../services/cajaService");
 
-async function getCajas(req, res) {
+// Obtener la caja única (o la primera)
+async function getCaja(req, res) {
   try {
-    const cajas = await Caja.find()
-      .populate("gastos_fijos gastos_variables compras deudas");
-    return res.json(cajas);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-}
-
-async function createOrUpdateCaja(req, res) {
-  try {
-    const { fecha, ingresos_dia } = req.body;
-
-    if (!fecha || ingresos_dia == null) {
-      return res.status(400).json({ error: "Fecha e ingresos_dia son requeridos" });
-    }
-
-    // normalizar la fecha (parseando como local, usando T00:00:00)
-    const start = toLocalStartOfDay(fecha);
-
-    start.setHours(0, 0, 0, 0);
-    const end = toLocalEndOfDay(fecha);
-
-    end.setHours(23, 59, 59, 999);
-
-    // buscar gastos del día
-    const [gastosFijos, gastosVariables, compras, deudas] = await Promise.all([
-      GastoFijo.find({ fecha: { $gte: start, $lte: end } }),
-      GastoVariable.find({ fecha: { $gte: start, $lte: end } }),
-      Compra.find({ fecha: { $gte: start, $lte: end } }),
-      Deuda.find({ fecha: { $gte: start, $lte: end } }) // si Deuda guarda fecha, si no se puede omitir
-    ]);
-
-    const total_gastos_dia =
-      [...gastosFijos, ...gastosVariables, ...compras, ...deudas].reduce(
-        (sum, g) => sum + (g.valor || 0),
-        0
-      );
-
-    const saldo_dia = ingresos_dia - total_gastos_dia;
-
-    const caja = await Caja.findOneAndUpdate(
-      { fecha: start },
-      {
-        fecha: start,
-        ingresos_dia,
-        total_gastos_dia,
-        saldo_dia,
-        gastos_fijos: gastosFijos.map(g => g._id),
-        gastos_variables: gastosVariables.map(g => g._id),
-        compras: compras.map(g => g._id),
-        deudas: deudas.map(g => g._id)
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    ).populate("gastos_fijos gastos_variables compras deudas");
-
-    return res.json(caja);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-}
-
-// Obtener detalle de una caja en una fecha específica
-async function getCajaByDate(req, res) {
-  try {
-    const { fecha } = req.params;
-    if (!fecha) {
-      return res.status(400).json({ error: "Se requiere la fecha en formato YYYY-MM-DD" });
-    }
-
-    const start = toLocalStartOfDay(fecha);
-    start.setHours(0, 0, 0, 0);
-    const end = toLocalEndOfDay(fecha);
-    end.setHours(23, 59, 59, 999);
-
-    const caja = await Caja.findOne({ fecha: start }).populate("gastos_fijos gastos_variables compras deudas");
-
+    let caja = await Caja.findOne();
     if (!caja) {
-      return res.status(404).json({ message: "No existe caja registrada en esa fecha" });
+      // crear la caja por defecto si no existe
+      caja = await Caja.create({ nombre: "Caja Principal", total_acumulado: 0, ingresos: [] });
+    }
+    res.json(caja);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// Agregar ingreso (push al array ingresos y recalcular)
+async function addIngreso(req, res) {
+  try {
+    const { fecha, valor, detalle, origen } = req.body;
+    if (valor == null || isNaN(Number(valor)) || !fecha) {
+      return res.status(400).json({ error: "fecha y valor son requeridos" });
     }
 
-    return res.json(caja);
+    // buscar o crear caja única
+    let caja = await Caja.findOne();
+    if (!caja) {
+      caja = await Caja.create({ nombre: "Caja Principal", total_acumulado: 0, ingresos: [] });
+    }
+
+    const ingreso = {
+      fecha: new Date(fecha), // asegúrate frontend envía YYYY-MM-DD o ISO
+      valor: Number(valor),
+      detalle: detalle || "",
+      origen: origen || ""
+    };
+
+    caja.ingresos.push(ingreso);
+    await caja.save();
+
+    // recalcular totales (simple suma de ingresos)
+    await recalculateCajaTotals(caja._id);
+
+    // devolver caja actualizada
+    const cajaAct = await Caja.findById(caja._id);
+    res.status(201).json({ ingreso: cajaAct.ingresos[cajaAct.ingresos.length - 1], caja: cajaAct });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("Error addIngreso:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// Listar ingresos (con filtros opcionales: desde - hasta)
+async function listIngresos(req, res) {
+  try {
+    const { desde, hasta } = req.query; // fechas en formato YYYY-MM-DD
+    const caja = await Caja.findOne();
+    if (!caja) return res.json([]);
+
+    let ingresos = caja.ingresos || [];
+
+    if (desde) {
+      const desdeDate = new Date(desde + "T00:00:00");
+      ingresos = ingresos.filter(i => new Date(i.fecha) >= desdeDate);
+    }
+    if (hasta) {
+      const hastaDate = new Date(hasta + "T23:59:59.999");
+      ingresos = ingresos.filter(i => new Date(i.fecha) <= hastaDate);
+    }
+
+    // ordenar descendente por fecha
+    ingresos.sort((a,b) => new Date(b.fecha) - new Date(a.fecha));
+
+    res.json(ingresos);
+  } catch (err) {
+    console.error("Error listIngresos:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// Eliminar un ingreso (opcional)
+async function deleteIngreso(req, res) {
+  try {
+    const { id } = req.params;
+    const caja = await Caja.findOne();
+    if (!caja) return res.status(404).json({ error: "Caja no encontrada" });
+
+    caja.ingresos.id(id)?.remove();
+    await caja.save();
+    await recalculateCajaTotals(caja._id);
+
+    res.json({ message: "Ingreso eliminado" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 }
 
 module.exports = {
-  getCajas,
-  createOrUpdateCaja,
-  getCajaByDate
+  getCaja,
+  addIngreso,
+  listIngresos,
+  deleteIngreso,
 };

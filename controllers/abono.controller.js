@@ -16,7 +16,8 @@ exports.createAbono = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { deuda_id, valor, fecha, detalle } = req.body;
+    const { deuda_id, valor, fecha, detalle, tipo_abono, porcentaje_aplicado } = req.body;
+
     if (!deuda_id || valor == null) {
       await session.abortTransaction();
       session.endSession();
@@ -37,7 +38,7 @@ exports.createAbono = async (req, res) => {
       return res.status(404).json({ error: "Deuda no encontrada" });
     }
 
-    // Política por defecto: rechazar abonos que superen el saldo (evita saldo negativo)
+    // Política: no permitir abonos que dejen saldo negativo
     if (valorNum > deuda.saldo_actual) {
       await session.abortTransaction();
       session.endSession();
@@ -49,6 +50,8 @@ exports.createAbono = async (req, res) => {
       fecha: fecha ? new Date(fecha) : new Date(),
       valor: valorNum,
       detalle,
+      tipo_abono: tipo_abono || "manual",
+      porcentaje_aplicado: porcentaje_aplicado || 0,
     });
 
     await abono.save({ session });
@@ -74,7 +77,6 @@ exports.createAbono = async (req, res) => {
 
 exports.getAbonos = async (req, res) => {
   try {
-    // puedes popular la deuda si lo deseas: .populate('deuda_id')
     const items = await Abono.find().sort({ fecha: -1 });
     res.json(items);
   } catch (err) {
@@ -97,7 +99,7 @@ exports.updateAbono = async (req, res) => {
   session.startTransaction();
   try {
     const id = req.params.id;
-    const { deuda_id: newDeudaId, valor: newValorRaw, fecha, detalle } = req.body;
+    const { deuda_id: newDeudaId, valor: newValorRaw, fecha, detalle, tipo_abono, porcentaje_aplicado } = req.body;
 
     const abonoOld = await Abono.findById(id).session(session);
     if (!abonoOld) {
@@ -116,7 +118,7 @@ exports.updateAbono = async (req, res) => {
       return res.status(400).json({ error: "El valor debe ser mayor que 0" });
     }
 
-    // Si la deuda se cambia -> necesitamos revertir en deuda antigua y aplicar en deuda nueva
+    // Cambio de deuda
     if (newDeudaId && String(newDeudaId) !== oldDeudaId) {
       const oldDeuda = await Deuda.findById(oldDeudaId).session(session);
       const newDeuda = await Deuda.findById(newDeudaId).session(session);
@@ -126,29 +128,28 @@ exports.updateAbono = async (req, res) => {
         return res.status(404).json({ error: "Deuda (antigua o nueva) no encontrada" });
       }
 
-      // Devolver valor al saldo de la deuda antigua (porque el abono ya no pertenece)
+      // Revertir saldo en deuda vieja
       oldDeuda.saldo_actual = round2(oldDeuda.saldo_actual + oldValor);
       oldDeuda.abonos = (oldDeuda.abonos || []).filter(aid => String(aid) !== String(abonoOld._id));
       await oldDeuda.save({ session });
 
-      // Validación: no permitir que nuevo abono deje saldo negativo (policy)
       if (newValor > newDeuda.saldo_actual) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({ error: "El nuevo abono supera el saldo de la nueva deuda" });
       }
 
-      // Aplicar nuevo valor en la nueva deuda
       newDeuda.saldo_actual = round2(newDeuda.saldo_actual - newValor);
       newDeuda.abonos = newDeuda.abonos || [];
       newDeuda.abonos.push(abonoOld._id);
       await newDeuda.save({ session });
 
-      // actualizar abono con nueva deuda y valor
       abonoOld.deuda_id = newDeudaId;
       abonoOld.valor = newValor;
       if (fecha) abonoOld.fecha = new Date(fecha);
       if (detalle !== undefined) abonoOld.detalle = detalle;
+      if (tipo_abono !== undefined) abonoOld.tipo_abono = tipo_abono;
+      if (porcentaje_aplicado !== undefined) abonoOld.porcentaje_aplicado = porcentaje_aplicado;
       await abonoOld.save({ session });
 
       await session.commitTransaction();
@@ -158,7 +159,7 @@ exports.updateAbono = async (req, res) => {
       return res.json({ abono: abonoOld, deuda: deudaPop });
     }
 
-    // Si la deuda no cambia: ajustamos la diferencia en la misma deuda
+    // Misma deuda
     const deuda = await Deuda.findById(abonoOld.deuda_id).session(session);
     if (!deuda) {
       await session.abortTransaction();
@@ -166,8 +167,7 @@ exports.updateAbono = async (req, res) => {
       return res.status(404).json({ error: "Deuda relacionada no encontrada" });
     }
 
-    const diff = round2(newValor - oldValor); // si diff>0 => resta más del saldo; si diff<0 => se aumenta saldo
-    // Validación: no permitir que saldo sea negativo (policy)
+    const diff = round2(newValor - oldValor);
     if (diff > 0 && diff > deuda.saldo_actual) {
       await session.abortTransaction();
       session.endSession();
@@ -177,10 +177,11 @@ exports.updateAbono = async (req, res) => {
     deuda.saldo_actual = round2(deuda.saldo_actual - diff);
     await deuda.save({ session });
 
-    // actualizar abono
     abonoOld.valor = newValor;
     if (fecha) abonoOld.fecha = new Date(fecha);
     if (detalle !== undefined) abonoOld.detalle = detalle;
+    if (tipo_abono !== undefined) abonoOld.tipo_abono = tipo_abono;
+    if (porcentaje_aplicado !== undefined) abonoOld.porcentaje_aplicado = porcentaje_aplicado;
     await abonoOld.save({ session });
 
     await session.commitTransaction();
@@ -215,7 +216,6 @@ exports.deleteAbono = async (req, res) => {
       return res.status(404).json({ error: "Deuda relacionada no encontrada" });
     }
 
-    // devolver valor
     deuda.saldo_actual = round2(deuda.saldo_actual + abono.valor);
     deuda.abonos = (deuda.abonos || []).filter(aid => String(aid) !== String(abono._id));
     await deuda.save({ session });
